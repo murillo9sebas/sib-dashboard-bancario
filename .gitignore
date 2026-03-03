@@ -1,0 +1,11 @@
+# Data files — cargar localmente, no subir al repo
+*.xls
+*.xlsx
+
+# Python
+__pycache__/
+*.pyc
+.env
+
+# Mac
+.DS_Store
