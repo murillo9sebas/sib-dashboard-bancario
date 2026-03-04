@@ -4,8 +4,10 @@ app.py — SIB Dashboard Bancario Guatemala
 Ejecutar con:   streamlit run app.py
 
 Para actualizar con nuevos datos:
-  1. Colocar el nuevo archivo SIB_balance_general_XX.xls en esta carpeta.
-  2. Clic en "🔄 Recargar datos" en el sidebar.
+  - Subir el nuevo .xls desde el sidebar → se inserta en Supabase → dashboard actualiza.
+
+Credenciales (local): .streamlit/secrets.toml
+Credenciales (Streamlit Cloud): Settings → Secrets
 """
 
 import os
@@ -17,7 +19,10 @@ import plotly.graph_objects as go
 import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from data_loader import METRICS, compute_changes, compute_system_totals, load_data
+from data_loader import (
+    METRICS, compute_changes, compute_system_totals,
+    load_data, load_from_supabase, insert_file_to_supabase,
+)
 
 # ── Configuración ─────────────────────────────────────────────────────────────
 
@@ -29,8 +34,22 @@ st.set_page_config(
 )
 
 DATA_DIR = os.path.dirname(os.path.abspath(__file__))
+COLORS   = px.colors.qualitative.Set2 + px.colors.qualitative.Pastel1
 
-COLORS = px.colors.qualitative.Set2 + px.colors.qualitative.Pastel1
+# ── Supabase client (optional — falls back to local .xls if not configured) ───
+
+def _get_supabase_client():
+    try:
+        from supabase import create_client
+        url = st.secrets.get("SUPABASE_URL", "")
+        key = st.secrets.get("SUPABASE_KEY", "")
+        if url and key:
+            return create_client(url, key)
+    except Exception:
+        pass
+    return None
+
+_supabase = _get_supabase_client()
 
 # ── Estilos ───────────────────────────────────────────────────────────────────
 
@@ -53,13 +72,15 @@ st.markdown(
 
 @st.cache_data(show_spinner="Cargando datos…")
 def get_data() -> pd.DataFrame:
+    if _supabase is not None:
+        return load_from_supabase(_supabase)
     return load_data(DATA_DIR)
 
 
 df = get_data()
 
 if df.empty:
-    st.error("No se encontraron archivos SIB_balance_general_*.xls en la carpeta.")
+    st.error("No se encontraron datos. Configura Supabase o agrega archivos .xls a la carpeta.")
     st.stop()
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -111,27 +132,32 @@ with st.sidebar:
 
     st.divider()
 
-    # File upload: drop a new .xls file to extend the dataset
+    # File upload → parse → insert into Supabase
     st.markdown("**Agregar nuevos datos**")
     uploaded = st.file_uploader(
         "Subir nuevo archivo .xls",
         type=["xls"],
-        help="El archivo se guardará en la carpeta y se recargará automáticamente.",
+        help="Se parseará e insertará en Supabase automáticamente.",
     )
     if uploaded is not None:
-        dest = os.path.join(DATA_DIR, uploaded.name)
-        with open(dest, "wb") as f:
-            f.write(uploaded.read())
-        st.success(f"✅ Guardado: {uploaded.name}")
-        st.cache_data.clear()
-        st.rerun()
+        if _supabase is None:
+            st.error("Supabase no está configurado. Agrega SUPABASE_URL y SUPABASE_KEY en secrets.")
+        else:
+            with st.spinner("Insertando en Supabase…"):
+                n = insert_file_to_supabase(_supabase, uploaded.read(), uploaded.name)
+            if n > 0:
+                st.success(f"✅ {n} registros nuevos insertados.")
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.info("ℹ️ Este período ya estaba en la base de datos.")
 
     if st.button("🔄 Recargar datos", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
-    n_files = len([f for f in os.listdir(DATA_DIR) if f.startswith("SIB_") and f.endswith(".xls")])
-    st.caption(f"📁 {n_files} archivos · {df['bank'].nunique()} bancos")
+    source = "Supabase" if _supabase else "archivos locales"
+    st.caption(f"📦 Fuente: {source} · {df['bank'].nunique()} bancos")
     st.caption(
         f"📅 {df['date'].min().strftime('%b %Y')} → {df['date'].max().strftime('%b %Y')}"
     )

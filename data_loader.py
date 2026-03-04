@@ -235,3 +235,87 @@ def compute_system_totals(df: pd.DataFrame) -> pd.DataFrame:
         total[f"{col}_mom"] = total[col].pct_change() * 100
         total[f"{col}_yoy"] = total[col].pct_change(12) * 100
     return total
+
+
+# ── Supabase integration ──────────────────────────────────────────────────────
+
+def load_from_supabase(client) -> pd.DataFrame:
+    """
+    Query all rows from Supabase `balance_general` table and return
+    a DataFrame with the same structure as `load_data()`.
+    """
+    import math
+
+    # Supabase returns max 1000 rows by default — paginate to get all
+    all_rows: list[dict] = []
+    page_size = 1000
+    offset = 0
+    while True:
+        res = (
+            client.table("balance_general")
+            .select("*")
+            .order("date", desc=False)
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+        batch = res.data or []
+        all_rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
+
+    if not all_rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(all_rows)
+    # Drop internal Supabase id column if present
+    df = df.drop(columns=["id"], errors="ignore")
+    df["date"] = pd.to_datetime(df["date"])
+    # Ensure numeric columns are float (Supabase may return strings)
+    numeric_cols = [c for c in df.columns if c not in ("date", "bank")]
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.sort_values("date").reset_index(drop=True)
+    return df
+
+
+def insert_file_to_supabase(client, file_content: str | bytes, filename: str) -> int:
+    """
+    Parse a single .xls file (as string or bytes) and upsert records to Supabase.
+    Returns the number of new rows inserted (duplicates are silently skipped).
+    """
+    import math
+    import tempfile
+
+    # Write to a temp file so _parse_file() can read it
+    suffix = ".xls"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False, mode="wb") as tmp:
+        if isinstance(file_content, str):
+            tmp.write(file_content.encode("cp1252", errors="replace"))
+        else:
+            tmp.write(file_content)
+        tmp_path = tmp.name
+
+    try:
+        records_raw = _parse_file(tmp_path)
+    finally:
+        os.unlink(tmp_path)
+
+    if not records_raw:
+        return 0
+
+    # Convert to Supabase-friendly format
+    records = []
+    for r in records_raw:
+        row = {"date": str(r["date"].date()), "bank": r["bank"]}
+        for col in [c for c in r if c not in ("date", "bank")]:
+            val = r[col]
+            row[col] = None if (val is None or (isinstance(val, float) and math.isnan(val))) else float(val)
+        records.append(row)
+
+    res = (
+        client.table("balance_general")
+        .upsert(records, on_conflict="date,bank", ignore_duplicates=True)
+        .execute()
+    )
+    return len(res.data) if res.data else 0

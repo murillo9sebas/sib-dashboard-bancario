@@ -2,6 +2,9 @@
 *.xls
 *.xlsx
 
+# Supabase credentials — NUNCA subir al repo
+.streamlit/secrets.toml
+
 # Python
 __pycache__/
 *.pyc
