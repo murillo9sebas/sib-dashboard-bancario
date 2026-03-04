@@ -36,20 +36,21 @@ st.set_page_config(
 DATA_DIR = os.path.dirname(os.path.abspath(__file__))
 COLORS   = px.colors.qualitative.Set2 + px.colors.qualitative.Pastel1
 
-# ── Supabase client (optional — falls back to local .xls if not configured) ───
+# ── Supabase client ───────────────────────────────────────────────────────────
 
 def _get_supabase_client():
+    from supabase import create_client
+    url = st.secrets.get("SUPABASE_URL", "").strip()
+    key = st.secrets.get("SUPABASE_KEY", "").strip()
+    if not url or not key:
+        return None, "SUPABASE_URL o SUPABASE_KEY no configurados"
     try:
-        from supabase import create_client
-        url = st.secrets.get("SUPABASE_URL", "")
-        key = st.secrets.get("SUPABASE_KEY", "")
-        if url and key:
-            return create_client(url, key)
-    except Exception:
-        pass
-    return None
+        client = create_client(url, key)
+        return client, None
+    except Exception as e:
+        return None, str(e)
 
-_supabase = _get_supabase_client()
+_supabase, _supabase_error = _get_supabase_client()
 
 # ── Estilos ───────────────────────────────────────────────────────────────────
 
@@ -76,6 +77,9 @@ def get_data() -> pd.DataFrame:
         return load_from_supabase(_supabase)
     return load_data(DATA_DIR)
 
+
+if _supabase_error:
+    st.warning(f"⚠️ Supabase: {_supabase_error}")
 
 df = get_data()
 
@@ -156,7 +160,7 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-    source = "Supabase" if _supabase else "archivos locales"
+    source = "Supabase ✅" if _supabase else f"archivos locales"
     st.caption(f"📦 Fuente: {source} · {df['bank'].nunique()} bancos")
     st.caption(
         f"📅 {df['date'].min().strftime('%b %Y')} → {df['date'].max().strftime('%b %Y')}"
