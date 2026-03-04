@@ -74,17 +74,25 @@ st.markdown(
 @st.cache_data(show_spinner="Cargando datos…")
 def get_data() -> pd.DataFrame:
     if _supabase is not None:
-        return load_from_supabase(_supabase)
+        try:
+            return load_from_supabase(_supabase)
+        except Exception as e:
+            st.error(f"❌ Error al consultar Supabase: {e}")
+            return pd.DataFrame()
     return load_data(DATA_DIR)
 
 
 if _supabase_error:
-    st.warning(f"⚠️ Supabase: {_supabase_error}")
+    st.error(f"❌ Supabase no conectado: {_supabase_error}")
 
 df = get_data()
 
 if df.empty:
-    st.error("No se encontraron datos. Configura Supabase o agrega archivos .xls a la carpeta.")
+    st.error("No se encontraron datos.")
+    if _supabase is None:
+        st.info("Supabase no está configurado o la conexión falló. Revisa los Secrets en Streamlit Cloud.")
+    else:
+        st.info("Supabase conectado pero la tabla `balance_general` está vacía o inaccesible.")
     st.stop()
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
