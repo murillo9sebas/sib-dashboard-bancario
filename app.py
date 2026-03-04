@@ -20,8 +20,8 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from data_loader import (
-    METRICS, compute_changes, compute_system_totals,
-    load_data, load_from_supabase, insert_file_to_supabase,
+    METRICS, KPI_METRICS, compute_changes, compute_system_totals,
+    compute_bank_vs_system, load_data, load_from_supabase, insert_file_to_supabase,
 )
 
 # ── Configuración ─────────────────────────────────────────────────────────────
@@ -96,7 +96,7 @@ with st.sidebar:
 
     mode = st.radio(
         "Vista",
-        ["📊 Por Banco", "🔀 Comparar Bancos", "🌐 Sistema Total"],
+        ["📊 Por Banco", "🔀 Comparar Bancos", "🌐 Sistema Total", "🆚 Banco vs Sistema"],
         index=0,
     )
 
@@ -116,6 +116,9 @@ with st.sidebar:
         if not selected_banks:
             st.warning("Selecciona al menos un banco.")
             st.stop()
+    elif mode == "🆚 Banco vs Sistema":
+        selected_bank = st.selectbox("Banco", all_banks)
+        selected_banks = [selected_bank]
     else:
         selected_banks = all_banks
 
@@ -224,7 +227,7 @@ if mode == "📊 Por Banco":
     st.markdown("#### Valores al último período")
     kpi_cols = st.columns(5)
 
-    for i, (label, col) in enumerate(METRICS.items()):
+    for i, (label, col) in enumerate(KPI_METRICS.items()):
         ch = compute_changes(dff, bank, col)
         if ch.empty:
             continue
@@ -254,9 +257,9 @@ if mode == "📊 Por Banco":
     st.markdown("#### Evolución histórica")
 
     chart_pairs = [
-        list(METRICS.items())[:2],
-        list(METRICS.items())[2:4],
-        [list(METRICS.items())[4]],
+        list(KPI_METRICS.items())[:2],
+        list(KPI_METRICS.items())[2:4],
+        [list(KPI_METRICS.items())[4]],
     ]
 
     for pair in chart_pairs:
@@ -468,7 +471,7 @@ elif mode == "🔀 Comparar Bancos":
 # VISTA: SISTEMA TOTAL
 # ═════════════════════════════════════════════════════════════════════════════
 
-else:
+elif mode == "🌐 Sistema Total":
     st.subheader("🌐 Sistema Bancario Total — Todos los bancos")
 
     total_df = compute_system_totals(dff)
@@ -476,7 +479,7 @@ else:
     # ── KPI cards ─────────────────────────────────────────────────────────────
     st.markdown("#### Último período — Sistema consolidado")
     kpi_cols = st.columns(5)
-    for i, (label, col) in enumerate(METRICS.items()):
+    for i, (label, col) in enumerate(KPI_METRICS.items()):
         latest = total_df.iloc[-1]
         mom = latest.get(f"{col}_mom")
         with kpi_cols[i]:
@@ -495,7 +498,7 @@ else:
     st.markdown("#### Evolución del sistema")
 
     fig_sys = go.Figure()
-    for i, (label, col) in enumerate(METRICS.items()):
+    for i, (label, col) in enumerate(KPI_METRICS.items()):
         fig_sys.add_trace(
             go.Scatter(
                 x=total_df["date"],
@@ -577,14 +580,158 @@ else:
 
     # ── Sistema total table ───────────────────────────────────────────────────
     st.markdown("#### Tabla resumen del sistema")
-    display = total_df[["date"] + list(METRICS.values())].copy()
+    display = total_df[["date"] + list(KPI_METRICS.values())].copy()
     display = display.sort_values("date", ascending=False).reset_index(drop=True)
     display["Período"] = display["date"].dt.strftime("%b %Y")
-    for label, col in METRICS.items():
+    for label, col in KPI_METRICS.items():
         display[label] = display[col].apply(fmt_q)
     st.dataframe(
-        display[["Período"] + list(METRICS.keys())],
+        display[["Período"] + list(KPI_METRICS.keys())],
         use_container_width=True,
         hide_index=True,
         height=420,
+    )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# VISTA: BANCO VS SISTEMA
+# ═════════════════════════════════════════════════════════════════════════════
+
+elif mode == "🆚 Banco vs Sistema":
+    bank = selected_banks[0]
+    st.subheader(f"🆚 {bank} — vs Sistema")
+    st.markdown(
+        f"Participación y dinámica de **{bank}** respecto al total del sistema bancario."
+    )
+
+    bvs = compute_bank_vs_system(dff, bank)
+
+    if bvs.empty:
+        st.warning("No hay datos suficientes para este banco.")
+        st.stop()
+
+    # ── Section 1: Share % KPI cards (5 key metrics, latest period) ───────────
+    st.markdown("#### Participación en el sistema — último período")
+    kpi_cols = st.columns(5)
+    for i, (label, col) in enumerate(KPI_METRICS.items()):
+        sub = bvs[bvs["metric"] == col].sort_values("date")
+        if sub.empty:
+            continue
+        latest   = sub.iloc[-1]
+        prior    = sub.iloc[-2] if len(sub) >= 2 else None
+        share    = latest["share_pct"]
+        delta_share = (share - prior["share_pct"]) if prior is not None else None
+        with kpi_cols[i]:
+            st.metric(
+                label=label,
+                value=f"{share:.2f}%",
+                delta=f"{delta_share:+.2f}pp" if delta_share is not None else None,
+                help="Participación del banco en el total del sistema (porcentaje)",
+            )
+            bank_val   = latest["bank_value"]
+            system_val = latest["system_total"]
+            st.caption(f"Banco: {fmt_q(bank_val)}  \nSistema: {fmt_q(system_val)}")
+
+    st.divider()
+
+    # ── Section 2: Market share evolution (line chart) ────────────────────────
+    st.markdown("#### Evolución de participación en el sistema")
+    sub = bvs[bvs["metric"] == metric_col].sort_values("date")
+
+    fig_share = go.Figure()
+    fig_share.add_trace(
+        go.Scatter(
+            x=sub["date"],
+            y=sub["share_pct"],
+            name=bank,
+            mode="lines+markers",
+            fill="tozeroy",
+            fillcolor="rgba(31,119,180,0.10)",
+            line=dict(color="#1f6ab0", width=2),
+            marker=dict(size=5),
+            hovertemplate="%{x|%b %Y}<br><b>%{y:.2f}%</b><extra></extra>",
+        )
+    )
+    # Reference: system average share (100 / number of banks)
+    n_banks = dff["bank"].nunique()
+    avg_share = 100 / n_banks
+    fig_share.add_hline(
+        y=avg_share,
+        line_dash="dash",
+        line_color="gray",
+        annotation_text=f"Promedio sistema ({avg_share:.1f}%)",
+        annotation_position="top right",
+    )
+    fig_share.update_layout(
+        title=f"Participación % en {metric_label}",
+        xaxis=dict(title="Fecha", tickformat="%b %y", showgrid=False),
+        yaxis=dict(title="% del sistema", showgrid=True, gridcolor="#eee"),
+        template="plotly_white",
+        height=380,
+        showlegend=False,
+    )
+    st.plotly_chart(fig_share, use_container_width=True)
+
+    st.divider()
+
+    # ── Section 3: Growth rate comparison — bank MoM% vs system MoM% ──────────
+    st.markdown("#### Crecimiento mensual: banco vs sistema")
+    sub12 = sub.tail(13).copy()  # last 12 months of changes
+
+    fig_growth = go.Figure()
+    fig_growth.add_trace(
+        go.Bar(
+            x=sub12["date"],
+            y=sub12["mom_bank"],
+            name=bank,
+            marker_color="#1f6ab0",
+            opacity=0.85,
+            hovertemplate="%{x|%b %Y}<br><b>%{y:+.2f}%</b><extra>" + bank + "</extra>",
+        )
+    )
+    fig_growth.add_trace(
+        go.Bar(
+            x=sub12["date"],
+            y=sub12["mom_system"],
+            name="Sistema",
+            marker_color="#f28e2b",
+            opacity=0.85,
+            hovertemplate="%{x|%b %Y}<br><b>%{y:+.2f}%</b><extra>Sistema</extra>",
+        )
+    )
+    fig_growth.add_hline(y=0, line_color="gray", line_width=1)
+    fig_growth.update_layout(
+        title=f"MoM % — {metric_label}",
+        barmode="group",
+        xaxis=dict(title="Fecha", tickformat="%b %y", showgrid=False),
+        yaxis=dict(title="MoM %", showgrid=True, gridcolor="#eee"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        template="plotly_white",
+        height=360,
+    )
+    st.plotly_chart(fig_growth, use_container_width=True)
+
+    st.divider()
+
+    # ── Section 4: All-metrics snapshot table (latest period) ─────────────────
+    st.markdown("#### Todos los rubros — último período")
+    metric_label_map = {v: k for k, v in METRICS.items()}
+    latest_rows = []
+    for col in list(METRICS.values()):
+        sub_col = bvs[bvs["metric"] == col].sort_values("date")
+        if sub_col.empty:
+            continue
+        row = sub_col.iloc[-1]
+        latest_rows.append({
+            "Rubro":            metric_label_map.get(col, col),
+            "Banco (miles Q)":  fmt_q(row["bank_value"]),
+            "Sistema (miles Q)": fmt_q(row["system_total"]),
+            "Participación %":  f"{row['share_pct']:.2f}%",
+            "MoM Banco":        fmt_pct(row["mom_bank"]),
+            "MoM Sistema":      fmt_pct(row["mom_system"]),
+        })
+    st.dataframe(
+        pd.DataFrame(latest_rows),
+        use_container_width=True,
+        hide_index=True,
     )

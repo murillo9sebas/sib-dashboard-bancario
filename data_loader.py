@@ -156,13 +156,36 @@ def _parse_file(path: str) -> list[dict]:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-#: The 5 metrics the dashboard focuses on
-METRICS: dict[str, str] = {
-    "Disponibilidades":     "disponibilidades",
-    "Inversiones":          "inversiones",
-    "Cartera de Créditos":  "cartera_creditos",
-    "Total Activo Neto":    "total_activo_neto",
+#: The 5 key metrics used for KPI cards and overview sections
+KPI_METRICS: dict[str, str] = {
+    "Disponibilidades":       "disponibilidades",
+    "Inversiones":            "inversiones",
+    "Cartera de Créditos":    "cartera_creditos",
+    "Total Activo Neto":      "total_activo_neto",
     "Total Pasivo y Capital": "total_pasivo_capital",
+}
+
+#: All 17 available metrics (exposed in the metric selector)
+METRICS: dict[str, str] = {
+    # Assets
+    "Disponibilidades":          "disponibilidades",
+    "Inversiones":               "inversiones",
+    "Cartera de Créditos":       "cartera_creditos",
+    "Otras Inversiones":         "otras_inversiones",
+    "Inmuebles y Muebles":       "inmuebles_muebles",
+    "Cargos Diferidos":          "cargos_diferidos",
+    "Otros Activos":             "otros_activos",
+    "Total Activo Neto":         "total_activo_neto",
+    # Liabilities & Capital
+    "Obligaciones Depositarias": "obligaciones_depositarias",
+    "Créditos Obtenidos":        "creditos_obtenidos",
+    "Obligaciones Financieras":  "obligaciones_financieras",
+    "Provisiones":               "provisiones",
+    "Créditos Diferidos":        "creditos_diferidos",
+    "Otros Pasivos":             "otros_pasivos",
+    "Otras Cuentas Acreedoras":  "otras_cuentas_acreedoras",
+    "Capital Contable":          "capital_contable",
+    "Total Pasivo y Capital":    "total_pasivo_capital",
 }
 
 
@@ -319,3 +342,37 @@ def insert_file_to_supabase(client, file_content: str | bytes, filename: str) ->
         .execute()
     )
     return len(res.data) if res.data else 0
+
+
+def compute_bank_vs_system(df: pd.DataFrame, bank: str) -> pd.DataFrame:
+    """
+    For every date and every metric column, compute the selected bank's
+    value, the system total, and the bank's % share.
+
+    Returns a DataFrame with columns:
+        date, metric, bank_value, system_total, share_pct,
+        mom_bank, mom_system
+    sorted by metric then date.
+    """
+    cols = list(METRICS.values())
+    system = df.groupby("date")[cols].sum().reset_index().sort_values("date")
+    bank_df = (
+        df[df["bank"] == bank][["date"] + cols]
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
+
+    rows = []
+    for col in cols:
+        b = bank_df[["date", col]].rename(columns={col: "bank_value"})
+        s = system[["date", col]].rename(columns={col: "system_total"})
+        merged = b.merge(s, on="date").dropna(subset=["bank_value", "system_total"])
+        merged["share_pct"]   = merged["bank_value"] / merged["system_total"] * 100
+        merged["mom_bank"]    = merged["bank_value"].pct_change() * 100
+        merged["mom_system"]  = merged["system_total"].pct_change() * 100
+        merged["metric"]      = col
+        rows.append(merged)
+
+    if not rows:
+        return pd.DataFrame()
+    return pd.concat(rows, ignore_index=True).sort_values(["metric", "date"])
